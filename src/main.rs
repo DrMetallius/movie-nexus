@@ -1,132 +1,86 @@
 use std::{
-    ptr::null_mut,
-    sync::{Condvar, Mutex},
-    thread::sleep,
-};
-
-use lazy_static::lazy_static;
-use windows::ErrorCode;
-
-use bindings::windows::win32::{
-    debug::GetLastError,
-    dns::{
-        DNS_SERVICE_REGISTER_REQUEST, DnsServiceRegister,
+    convert::Infallible,
+    env::args,
+    error,
+    net::{
+        IpAddr::{V4, V6},
+        Ipv4Addr,
+        Ipv6Addr,
+        SocketAddr
     },
-    system_services::DNS_REQUEST_PENDING,
-    windows_programming::{COMPUTER_NAME_FORMAT, GetComputerNameExW},
+    sync::Arc,
 };
-use crate::wrapper::DnsServiceInfo;
 
-#[allow(dead_code)]
-mod bindings {
-    ::windows::include_bindings!();
-}
+use futures::future;
+use hyper::{
+    Body,
+    Method,
+    Request,
+    Response,
+    server::Server,
+    service::{make_service_fn, service_fn},
+    StatusCode,
+};
 
-const SERVICE_NAME: &str = "MovieNexus";
-const SERVICE_TYPE: &str = "_http._tcp.local";
+use crate::network::register_service;
+use crate::scanner::scan_directory;
+use hyper::http::HeaderValue;
+
+mod network;
+mod scanner;
+
 const PORT: u16 = 5000;
 
-lazy_static! {
-    static ref REGISTRATION_MUTEX: Mutex<()> = Mutex::default();
-    static ref REGISTRATION_IN_PROGRESS_MUTEX: Mutex<bool> = Mutex::new(false);
-    static ref REGISTRATION_STATE_VAR: Condvar = Condvar::new();
-}
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn error::Error>> {
+    register_service(PORT)?;
 
-fn main() -> Result<(), windows::Error> {
-    register_service()?;
+    let folder = args().skip(1).next().unwrap();
+    let catalogue = scan_directory(folder.as_ref(), folder.as_ref())?;
+    let manifest = Arc::new(serde_json::to_string(&*catalogue).unwrap());
 
-    sleep(std::time::Duration::from_secs(10));
-    Ok(())
-}
+    let service = make_service_fn(move |_conn| {
+        let manifest = manifest.clone();
+        async {
+            Ok::<_, Infallible>(service_fn(move |request: Request<Body>| {
+                let manifest = manifest.clone();
+                async move {
+                    let mut response = Response::new(Body::empty());
 
-fn register_service() -> Result<(), windows::Error> {
-    let mut buf = [0u16; 256];
-    let mut len = buf.len();
+                    match (request.method(), request.uri().path()) {
+                        (&Method::GET, "/") => serve_manifest(manifest, &mut response),
+                        _ => *response.status_mut() = StatusCode::NOT_FOUND
+                    }
 
-    unsafe { GetComputerNameExW(COMPUTER_NAME_FORMAT::ComputerNameDnsFullyQualified, buf.as_mut_ptr() as _, &mut len as *mut _ as _).ok()?; }
-
-    let first_zero = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
-    let hostname = String::from_utf16(&buf[..first_zero]).unwrap();
-
-    let service_name = format!("{}-{}.{}", hostname.clone(), SERVICE_NAME, SERVICE_TYPE);
-    let host_name = format!("{}.local", hostname);
-
-    let service_instance = DnsServiceInfo::new(&service_name, &host_name, PORT);
-
-    let mut request = DNS_SERVICE_REGISTER_REQUEST {
-        version: 1,
-        interface_index: 0,
-        p_service_instance: service_instance.instance(),
-        p_register_completion_callback: Some(registration_callback),
-        p_query_context: null_mut(),
-        h_credentials: Default::default(),
-        unicast_enabled: false.into(),
-    };
-
-    {
-        let _registration_guard = REGISTRATION_MUTEX.lock().unwrap();
-        let mut state_guard = REGISTRATION_IN_PROGRESS_MUTEX.lock().unwrap();
-        *state_guard = true;
-
-        let result = unsafe { DnsServiceRegister(&mut request as *mut _, null_mut()) };
-        if result != DNS_REQUEST_PENDING as u32 {
-            return Err(ErrorCode(unsafe { GetLastError() }).into());
+                    Ok::<_, Infallible>(response)
+                }
+            }))
         }
+    });
 
-        let _var_guard = REGISTRATION_STATE_VAR.wait_while(state_guard, |registration_in_progress| *registration_in_progress).unwrap();
+    let handles: Vec<_> = vec![V4(Ipv4Addr::from(0)), V6(Ipv6Addr::from(0))]
+        .into_iter()
+        .map(|ip_addr| {
+            let addr = SocketAddr::from((ip_addr, PORT));
+            let server = Server::bind(&addr)
+                .serve(service.clone())
+                .with_graceful_shutdown(shutdown_signal());
+            tokio::spawn(server)
+        })
+        .collect();
+
+    if let (Err(e), ..) = future::select_all(handles).await {
+        eprintln!("Server error: {}", e);
     }
 
     Ok(())
 }
 
-extern "system" fn registration_callback() {
-    println!("Service registration complete");
-
-    *REGISTRATION_IN_PROGRESS_MUTEX.lock().unwrap() = false;
-    REGISTRATION_STATE_VAR.notify_all();
+fn serve_manifest(manifest: Arc<String>, response: &mut Response<Body>) {
+    response.headers_mut().insert("Content-Type", HeaderValue::from_static("application/json"));
+    *response.body_mut() = Body::from(String::to_owned(&manifest))
 }
 
-mod wrapper {
-    use std::ptr::null_mut;
-    use crate::bindings::windows::win32::dns::{DNS_SERVICE_INSTANCE, DnsServiceConstructInstance, DnsServiceFreeInstance};
-
-    pub struct DnsServiceInfo {
-        instance: *mut DNS_SERVICE_INSTANCE
-    }
-
-    impl DnsServiceInfo {
-        pub fn new(service_name: &str, host_name: &str, port: u16) -> DnsServiceInfo {
-            let instance = unsafe {
-                let mut service_name = (service_name.to_owned() + "\0").encode_utf16().collect::<Vec<u16>>();
-                let mut host_name = (host_name.to_owned() + "\0").encode_utf16().collect::<Vec<u16>>();
-
-                DnsServiceConstructInstance(
-                    service_name.as_mut_ptr(),
-                    host_name.as_mut_ptr(),
-                    null_mut(),
-                    null_mut(),
-                    port,
-                    0,
-                    0,
-                    0,
-                    null_mut(),
-                    null_mut(),
-                )
-            };
-
-            DnsServiceInfo {
-                instance
-            }
-        }
-
-        pub fn instance(&self) -> *mut DNS_SERVICE_INSTANCE {
-            self.instance
-        }
-    }
-
-    impl Drop for DnsServiceInfo {
-        fn drop(&mut self) {
-            unsafe { DnsServiceFreeInstance(self.instance) }
-        }
-    }
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c().await.unwrap();
 }

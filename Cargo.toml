@@ -4,11 +4,16 @@ version = "0.1.0"
 authors = ["Alexander Gazarov <unrealrider@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 windows = "0.3.1"
 lazy_static = "1.4.0"
+hyper = { version = "0.14.4", features = ["http1", "http2", "server", "runtime", "tcp"] }
+tokio = { version = "1.2.0", features = ["rt-multi-thread", "net", "macros", "signal"] }
+serde = { version = "1.0.123", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.5"
+iso8601 = "0.4.0"
+futures = "0.3.12"
 
 [build-dependencies]
 windows = "0.3.1"
