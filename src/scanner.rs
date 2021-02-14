@@ -3,9 +3,10 @@ use std::{
     time::Duration,
     path::{PathBuf, Path, Component},
     io,
-    fs
+    fs,
 };
 use serde::{Deserialize, Serialize, Serializer, ser};
+use std::collections::HashSet;
 
 const EXTENSION_MP4: &str = "mp4";
 const EXTENSION_TOML: &str = "toml";
@@ -35,7 +36,7 @@ pub enum CatalogueItem {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct RelativizedPath {
     pub path: PathBuf,
     pub relative_path: PathBuf,
@@ -139,4 +140,15 @@ struct Config {
     duration: String,
     #[serde(rename = "text-track-language")]
     text_track_language: Option<String>,
+}
+
+pub fn extract_served_files(catalogue: &Vec<CatalogueItem>) -> HashSet<RelativizedPath> {
+    catalogue.iter()
+        .flat_map(|item| {
+            match item {
+                CatalogueItem::Video { path, .. } => Some(path.clone()).into_iter().collect(),
+                CatalogueItem::Directory { items, .. } => extract_served_files(items)
+            }
+        })
+        .collect()
 }

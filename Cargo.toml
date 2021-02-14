@@ -7,13 +7,18 @@ edition = "2018"
 [dependencies]
 windows = "0.3.1"
 lazy_static = "1.4.0"
-hyper = { version = "0.14.4", features = ["http1", "http2", "server", "runtime", "tcp"] }
-tokio = { version = "1.2.0", features = ["rt-multi-thread", "net", "macros", "signal"] }
+hyper = { version = "0.14.4", features = ["http1", "http2", "server", "runtime", "tcp", "stream"] }
+tokio = { version = "1.2.0", features = ["rt-multi-thread", "net", "macros", "signal", "io-util", "fs"] }
+tokio-util = { version = "0.6.3 ", features = ["codec"] }
 serde = { version = "1.0.123", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.5"
 iso8601 = "0.4.0"
 futures = "0.3.12"
+percent-encoding = "2.1.0"
+nom = "6.1.0"
+funty = "=1.1.0" # Due to a breaking bug in 1.2.0
+mime_guess = "2.0.3"
 
 [build-dependencies]
 windows = "0.3.1"
