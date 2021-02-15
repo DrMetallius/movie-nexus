@@ -52,6 +52,9 @@ const PORT: u16 = 5000;
 const PATH_MANIFEST: &str = "/";
 const PATH_FILE_PREFIX: &str = "/file/";
 
+const ALLOWED_ORIGIN: &str = "*";
+const MAX_AGE: u32 = 48 * 60 * 60;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
     register_service(PORT)?;
@@ -73,13 +76,24 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
 
                     match (request.method(), request.uri().path()) {
                         (&Method::GET, PATH_MANIFEST) => serve_manifest(manifest, &mut response),
-                        (&Method::GET, path) if path.starts_with(PATH_FILE_PREFIX) => {
-                            serve_file(
-                                served_files,
-                                path.strip_prefix(PATH_FILE_PREFIX).unwrap(),
-                                request.headers(),
-                                &mut response,
-                            ).await
+                        (method @ &Method::GET, path) | (method @ &Method::OPTIONS, path) if path.starts_with(PATH_FILE_PREFIX) => {
+                            response.headers_mut().insert("Accept-Ranges", HeaderValue::from_static("bytes"));
+                            add_common_cors_headers(&mut response);
+
+                            match method {
+                                &Method::OPTIONS => {
+                                    response.headers_mut().insert("Access-Control-Allow-Methods", HeaderValue::from_static("GET"));
+                                }
+                                &Method::GET => {
+                                    serve_file(
+                                        served_files,
+                                        path.strip_prefix(PATH_FILE_PREFIX).unwrap(),
+                                        request.headers(),
+                                        &mut response,
+                                    ).await;
+                                }
+                                _ => panic!("Unhandled method: {}", method)
+                            }
                         }
                         _ => *response.status_mut() = StatusCode::NOT_FOUND
                     }
@@ -227,9 +241,14 @@ async fn serve_file_range(path: &Path, range: &Option<ByteRange>, response: &mut
         response.headers_mut().insert("Content-Type", mime.to_string().try_into().unwrap());
     }
 
-    response.headers_mut().insert("Accept-Ranges", HeaderValue::from_static("bytes"));
     *response.body_mut() = body;
     Ok(())
+}
+
+fn add_common_cors_headers(response: &mut Response<Body>) {
+    response.headers_mut().insert("Access-Control-Allow-Origin", HeaderValue::from_static(ALLOWED_ORIGIN));
+    response.headers_mut().insert("Access-Control-Expose-Headers", HeaderValue::from_static("Content-Type, Accept-Encoding, Range"));
+    response.headers_mut().insert("Access-Control-Max-Age", HeaderValue::from(MAX_AGE));
 }
 
 async fn shutdown_signal() {
