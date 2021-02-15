@@ -146,7 +146,12 @@ pub fn extract_served_files(catalogue: &Vec<CatalogueItem>) -> HashSet<Relativiz
     catalogue.iter()
         .flat_map(|item| {
             match item {
-                CatalogueItem::Video { path, .. } => Some(path.clone()).into_iter().collect(),
+                CatalogueItem::Video { path, text_tracks, .. } => text_tracks
+                    .values()
+                    .map(|path| path.clone())
+                    .chain(Some(path.clone()))
+                    .into_iter()
+                    .collect(),
                 CatalogueItem::Directory { items, .. } => extract_served_files(items)
             }
         })
